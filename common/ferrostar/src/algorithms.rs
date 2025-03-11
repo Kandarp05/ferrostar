@@ -12,8 +12,7 @@ use crate::{
     navigation_controller::models::{SpecialAdvanceConditions, TripProgress},
 };
 use geo::{
-    Bearing, Closest, Coord, Distance, Euclidean, Geodesic, Haversine, HaversineClosestPoint,
-    Length, LineLocatePoint, LineString, Point,
+    Bearing, Closest, Coord, Distance, Euclidean, Geodesic, Haversine, HaversineClosestPoint, Length, LineLocatePoint, LineString, Point
 };
 
 #[cfg(test)]
@@ -28,17 +27,11 @@ use std::time::SystemTime;
 #[cfg(all(test, feature = "web-time"))]
 use web_time::SystemTime;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AdaptiveAlgorithm {
-    Haversine,
-    Geodesic,
-}
-
 /// Enum for calcuation methods
 /// 
 /// The `Haversine` method is a simple formula that calculates the distance between two points on a sphere.
 /// The `Geodesic` method uses the Vincenty formula to calculate the distance between two points on an ellipsoid.
-/// The `Adaptive` method uses evidence-based apprach to dynamically switch between the two methods.
+/// The `Adaptive` method uses evidence-based approach to dynamically switch between the two methods.
 #[derive(Clone, Debug)]
 pub enum DistanceCalculation {
     ///Always use the Haversine formula
@@ -58,25 +51,57 @@ pub enum DistanceCalculation {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AdaptiveAlgorithm {
+    Haversine,
+    Geodesic,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LatitudeThresholds {
+    high: f64,
+    moderate: f64,
+    mid: f64,
+    equatorial: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DistanceThresholds {
+    long: f64,    
+    medium: f64,  
+    short: f64,   
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DecayMultipliers {
+    equatorial: f64,
+    high_latitude: f64, 
+    mid_latitude: f64,
+    negative_evidence_boost: f64,
+}
+
 impl DistanceCalculation {
     ///Change these values according to need.
 
-    // Latitude thresholds
-    const HIGH_LATITUDE_THRESHOLD: f64 = 65.0;
-    const MODERATE_LATITUDE_THRESHOLD: f64 = 55.0;
-    const MID_LATITUDE_THRESHOLD: f64 = 40.0;
-    const EQUATORIAL_THRESHOLD: f64 = 15.0;
+    const LATITUDE: LatitudeThresholds = LatitudeThresholds {
+        high: 65.0,
+        moderate: 55.0,
+        mid: 40.0,
+        equatorial: 15.0,
+    };
 
-    // Distance thresholds (in meters)
-    const LONG_DISTANCE_THRESHOLD: f64 = 500_000.0; // 500km
-    const MEDIUM_DISTANCE_THRESHOLD: f64 = 200_000.0; // 200km
-    const SHORT_DISTANCE_THRESHOLD: f64 = 5_000.0; // 5km
+    const DISTANCE: DistanceThresholds = DistanceThresholds {
+        long: 500_000.0, // 500km
+        medium: 200_000.0, // 200km
+        short: 5_000.0, // 5km
+    };
 
-    // Decay multipliers
-    const EQUATORIAL_DECAY_MULTIPLIER: f64 = 7.0;
-    const HIGH_LATITUDE_DECAY_MULTIPLIER: f64 = 4.5;
-    const MID_LATITUDE_DECAY_MULTIPLIER: f64 = 3.0;
-    const NEGATIVE_EVIDENCE_BOOST: f64 = 1.5;
+    const DECAY: DecayMultipliers = DecayMultipliers {
+        equatorial: 7.0,
+        high_latitude: 4.5,
+        mid_latitude: 3.0,
+        negative_evidence_boost: 1.5,
+    };
 
     /// Calculate distance between two points using the current algorithm choice.
     /// 
@@ -95,44 +120,15 @@ impl DistanceCalculation {
                 let mut new_evidence = *evidence;
 
                 // Factor 1: Latitude -> Higher latitude favor Geodesic
-                let max_latitude = from.y().abs().max(to.y().abs());
-                let latitude_factor = if max_latitude > Self::HIGH_LATITUDE_THRESHOLD {
-                    1.0 // Strong evidence for Geodesic at very high latitudes
-                } else if max_latitude > Self::MODERATE_LATITUDE_THRESHOLD {
-                    0.5 // Moderate evidence at high latitudes
-                } else if max_latitude > Self::MID_LATITUDE_THRESHOLD {
-                    0.1 // Very light evidence at mid-high latitudes
-                } else if max_latitude < Self::EQUATORIAL_THRESHOLD {
-                    -0.8 // Very strong preference for Haversine at equatorial regions
-                } else {
-                    -0.4 // Strong preference for Haversine at mid latitudes
-                };
+                let (latitude_factor, max_latitude) = self.calculate_latitude_evidence(from, to);
 
                 // Factor 2: Distance -> Longer distances favor Geodesic
-                let dlat = (to.y() - from.y()).abs();
-                let dlon = (to.x() - from.x()).abs();
-                let rough_distance = (dlat.powi(2) + dlon.powi(2)).sqrt() * 111_000.0; // ~111km per degree
+                let distance_factor = self.calculate_distance_evidence(from, to);
                 
-                let distance_factor = if rough_distance > Self::LONG_DISTANCE_THRESHOLD {
-                    0.5 // Strong evidence
-                } else if rough_distance > Self::MEDIUM_DISTANCE_THRESHOLD {
-                    0.3 // Moderate evidence
-                } else if rough_distance < Self::SHORT_DISTANCE_THRESHOLD {
-                    -0.6 // Strong preference for Haversine
-                } else {
-                    -0.3 // Preference for Haversine at medium distances
-                };
 
                 // Apply aggressive decay when using Geodesic to quickly switch back when possible
                 if *current_algorithm == AdaptiveAlgorithm::Geodesic {
-                    // Apply stronger decay at lower latitudes to switch back quickly
-                    if max_latitude < 30.0 {
-                        new_evidence *= 1.0 - (evidence_decay * Self::EQUATORIAL_DECAY_MULTIPLIER); 
-                    } else if max_latitude < 45.0 {
-                        new_evidence *= 1.0 - (evidence_decay * Self::HIGH_LATITUDE_DECAY_MULTIPLIER); 
-                    } else {
-                        new_evidence *= 1.0 - (evidence_decay * Self::MID_LATITUDE_DECAY_MULTIPLIER); 
-                    }
+                    new_evidence = self.apply_evidence_decay(*evidence, max_latitude, *evidence_decay)
                 } else {
                     // Standard decay in Haversine mode
                     new_evidence *= 1.0 - evidence_decay;
@@ -143,27 +139,14 @@ impl DistanceCalculation {
 
                 // Speed up switching back to Haversine when evidence suggests it's appropriate
                 if new_evidence < 0.0 && *current_algorithm == AdaptiveAlgorithm::Geodesic {
-                    new_evidence *= Self::NEGATIVE_EVIDENCE_BOOST; // Boost negative evidence in Geodesic mode
+                    new_evidence *= Self::DECAY.negative_evidence_boost; // Boost negative evidence in Geodesic mode
                 }
 
-                let (new_algorithm, final_evidence, distance) = match current_algorithm {
-                    AdaptiveAlgorithm::Haversine => {
-                        if new_evidence > *switch_threshold {
-                            // Reset evidence when switching to Geodesic
-                            (AdaptiveAlgorithm::Geodesic, 0.0, Geodesic::distance(from, to))
-                        } else {
-                            (AdaptiveAlgorithm::Haversine, new_evidence, Haversine::distance(from, to))
-                        }
-                    },
-                    AdaptiveAlgorithm::Geodesic => {
-                        // Make it easier to switch back to Haversine (only 25% of threshold)
-                        if new_evidence < -*switch_threshold * 0.25 {
-                            // Reset evidence when switching to Haversine
-                            (AdaptiveAlgorithm::Haversine, 0.0, Haversine::distance(from, to))
-                        } else {
-                            (AdaptiveAlgorithm::Geodesic, new_evidence, Geodesic::distance(from, to))
-                        }
-                    }
+                let (new_algorithm, final_evidence) = self.determine_algorithm(*current_algorithm, new_evidence, *switch_threshold);
+
+                let distance = match new_algorithm {
+                    AdaptiveAlgorithm::Haversine => Haversine::distance(from, to),
+                    AdaptiveAlgorithm::Geodesic => Geodesic::distance(from, to),
                 };
 
                 (
@@ -179,9 +162,82 @@ impl DistanceCalculation {
         }
     }
 
+    fn calculate_latitude_evidence(&self, from: Point, to: Point) -> (f64, f64) {
+        let max_latitude = from.y().abs().max(to.y().abs());
+    
+        let latitude_factor = if max_latitude > Self::LATITUDE.high {
+            1.0 // Strong evidence for Geodesic at very high latitudes
+        } else if max_latitude > Self::LATITUDE.moderate {
+            0.5 // Moderate evidence at high latitudes
+        } else if max_latitude > Self::LATITUDE.mid {
+            0.1 // Very light evidence at mid-high latitudes
+        } else if max_latitude < Self::LATITUDE.equatorial {
+            -0.8 // Very strong preference for Haversine at equatorial regions
+        } else {
+            -0.4 // Strong preference for Haversine at mid latitudes
+        };
+    
+        (latitude_factor, max_latitude)
+    }
+
+    fn calculate_distance_evidence(&self, from: Point, to: Point) -> f64 {
+        let rough_distance = self.estimate_rough_distance(from, to);
+
+        if rough_distance > Self::DISTANCE.long {
+            0.5 // Strong evidence
+        } else if rough_distance > Self::DISTANCE.medium {
+            0.3 // Moderate evidence
+        } else if rough_distance < Self::DISTANCE.short {
+            -0.6 // Strong preference for Haversine
+        } else {
+            -0.3 // Preference for Haversine at medium distances
+        }
+    }
+
+    fn estimate_rough_distance(&self, from: Point, to: Point) -> f64 {
+        let dlat = (to.y() - from.y()).abs();
+        let dlon = (to.x() - from.x()).abs();
+        (dlat.powi(2) + dlon.powi(2)).sqrt() * 111_000.0 // ~111km per degree
+    }
+
+    fn apply_evidence_decay(&self, evidence: f64, max_latitude: f64, evidence_decay: f64) -> f64 {
+        // Apply stronger decay at lower latitudes to switch back quickly
+        let decay_multiplier = if max_latitude < 30.0 {
+            Self::DECAY.equatorial
+        } else if max_latitude < 45.0 {
+            Self::DECAY.high_latitude
+        } else {
+            Self::DECAY.mid_latitude
+        };
+
+        evidence * (1.0 - (evidence_decay * decay_multiplier))
+    }
+
+    fn determine_algorithm(&self, current_algorithm: AdaptiveAlgorithm, evidence: f64, switch_threshold: f64) -> (AdaptiveAlgorithm, f64) {
+        match current_algorithm {
+            AdaptiveAlgorithm::Haversine => {
+                if evidence > switch_threshold {
+                    // Reset evidence when switching to Geodesic
+                    (AdaptiveAlgorithm::Geodesic, 0.0)
+                } else {
+                    (AdaptiveAlgorithm::Haversine, evidence)
+                }
+            },
+            AdaptiveAlgorithm::Geodesic => {
+                // Make it easier to switch back to Haversine (only 25% of threshold)
+                if evidence < -switch_threshold * 0.25 {
+                    // Reset evidence when switching to Haversine
+                    (AdaptiveAlgorithm::Haversine, 0.0)
+                } else {
+                    (AdaptiveAlgorithm::Geodesic, evidence)
+                }
+            }
+        }
+    }
+
     /// Create a default adaptive distance calculator with the Haversine algorithm as the initial choice.
     /// 
-    /// Default settinf prefer Haversine  for better performance but will switch to Geodesic for longer distances and higher latitudes.
+    /// Default setting prefer Haversine  for better performance but will switch to Geodesic for longer distances and higher latitudes.
     pub fn default_adaptive() -> Self {
         Self::Adaptive {
             current_algorithm: AdaptiveAlgorithm::Haversine, // Start with faster algorithm
