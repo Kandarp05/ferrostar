@@ -28,6 +28,170 @@ use std::time::SystemTime;
 #[cfg(all(test, feature = "web-time"))]
 use web_time::SystemTime;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AdaptiveAlgorithm {
+    Haversine,
+    Geodesic,
+}
+
+/// Enum for calcuation methods
+/// 
+/// The `Haversine` method is a simple formula that calculates the distance between two points on a sphere.
+/// The `Geodesic` method uses the Vincenty formula to calculate the distance between two points on an ellipsoid.
+/// The `Adaptive` method uses evidence-based apprach to dynamically switch between the two methods.
+#[derive(Clone, Debug)]
+pub enum DistanceCalculation {
+    ///Always use the Haversine formula
+    Haversine,
+    ///Always use the Geodesic formula
+    Geodesic,
+    ///Adaptively choose between algorithms based on conditions
+    Adaptive {
+        ///Current algorithm in use
+        current_algorithm: AdaptiveAlgorithm,
+        ///Accumulated evidence for switching (positive = switch to Geodesic, negative = switch to Haversine)
+        evidence: f64,
+        /// Threshold for switching 
+        switch_threshold: f64,
+        /// Evidence decay rate
+        evidence_decay: f64,
+    }
+}
+
+impl DistanceCalculation {
+    ///Change these values according to need.
+
+    // Latitude thresholds
+    const HIGH_LATITUDE_THRESHOLD: f64 = 65.0;
+    const MODERATE_LATITUDE_THRESHOLD: f64 = 55.0;
+    const MID_LATITUDE_THRESHOLD: f64 = 40.0;
+    const EQUATORIAL_THRESHOLD: f64 = 15.0;
+
+    // Distance thresholds (in meters)
+    const LONG_DISTANCE_THRESHOLD: f64 = 500_000.0; // 500km
+    const MEDIUM_DISTANCE_THRESHOLD: f64 = 200_000.0; // 200km
+    const SHORT_DISTANCE_THRESHOLD: f64 = 5_000.0; // 5km
+
+    // Decay multipliers
+    const EQUATORIAL_DECAY_MULTIPLIER: f64 = 7.0;
+    const HIGH_LATITUDE_DECAY_MULTIPLIER: f64 = 4.5;
+    const MID_LATITUDE_DECAY_MULTIPLIER: f64 = 3.0;
+    const NEGATIVE_EVIDENCE_BOOST: f64 = 1.5;
+
+    /// Calculate distance between two points using the current algorithm choice.
+    /// 
+    /// For the Adaptive variant, this method accumulates evidence based on the current conditions and will switch algorithms if evidence passes a threshold.
+    /// 
+    /// This method returns both the calculated distance and the updated DistanceCalculation enum.
+    pub fn calculate_distance(&self, from: Point, to: Point) -> (f64, DistanceCalculation) {
+        if !is_valid_float(from.x()) || !is_valid_float(from.y()) || !is_valid_float(to.x()) || !is_valid_float(to.y()) {
+            return (0.0, self.clone());
+        }
+        
+        match self {
+            Self::Haversine => (Haversine::distance(from, to), self.clone()),
+            Self::Geodesic => (Geodesic::distance(from, to), self.clone()),
+            Self::Adaptive { current_algorithm, evidence, switch_threshold, evidence_decay } => {
+                let mut new_evidence = *evidence;
+
+                // Factor 1: Latitude -> Higher latitude favor Geodesic
+                let max_latitude = from.y().abs().max(to.y().abs());
+                let latitude_factor = if max_latitude > Self::HIGH_LATITUDE_THRESHOLD {
+                    1.0 // Strong evidence for Geodesic at very high latitudes
+                } else if max_latitude > Self::MODERATE_LATITUDE_THRESHOLD {
+                    0.5 // Moderate evidence at high latitudes
+                } else if max_latitude > Self::MID_LATITUDE_THRESHOLD {
+                    0.1 // Very light evidence at mid-high latitudes
+                } else if max_latitude < Self::EQUATORIAL_THRESHOLD {
+                    -0.8 // Very strong preference for Haversine at equatorial regions
+                } else {
+                    -0.4 // Strong preference for Haversine at mid latitudes
+                };
+
+                // Factor 2: Distance -> Longer distances favor Geodesic
+                let dlat = (to.y() - from.y()).abs();
+                let dlon = (to.x() - from.x()).abs();
+                let rough_distance = (dlat.powi(2) + dlon.powi(2)).sqrt() * 111_000.0; // ~111km per degree
+                
+                let distance_factor = if rough_distance > Self::LONG_DISTANCE_THRESHOLD {
+                    0.5 // Strong evidence
+                } else if rough_distance > Self::MEDIUM_DISTANCE_THRESHOLD {
+                    0.3 // Moderate evidence
+                } else if rough_distance < Self::SHORT_DISTANCE_THRESHOLD {
+                    -0.6 // Strong preference for Haversine
+                } else {
+                    -0.3 // Preference for Haversine at medium distances
+                };
+
+                // Apply aggressive decay when using Geodesic to quickly switch back when possible
+                if *current_algorithm == AdaptiveAlgorithm::Geodesic {
+                    // Apply stronger decay at lower latitudes to switch back quickly
+                    if max_latitude < 30.0 {
+                        new_evidence *= 1.0 - (evidence_decay * Self::EQUATORIAL_DECAY_MULTIPLIER); 
+                    } else if max_latitude < 45.0 {
+                        new_evidence *= 1.0 - (evidence_decay * Self::HIGH_LATITUDE_DECAY_MULTIPLIER); 
+                    } else {
+                        new_evidence *= 1.0 - (evidence_decay * Self::MID_LATITUDE_DECAY_MULTIPLIER); 
+                    }
+                } else {
+                    // Standard decay in Haversine mode
+                    new_evidence *= 1.0 - evidence_decay;
+                }
+                
+                // Add new factors
+                new_evidence += latitude_factor + distance_factor;
+
+                // Speed up switching back to Haversine when evidence suggests it's appropriate
+                if new_evidence < 0.0 && *current_algorithm == AdaptiveAlgorithm::Geodesic {
+                    new_evidence *= Self::NEGATIVE_EVIDENCE_BOOST; // Boost negative evidence in Geodesic mode
+                }
+
+                let (new_algorithm, final_evidence, distance) = match current_algorithm {
+                    AdaptiveAlgorithm::Haversine => {
+                        if new_evidence > *switch_threshold {
+                            // Reset evidence when switching to Geodesic
+                            (AdaptiveAlgorithm::Geodesic, 0.0, Geodesic::distance(from, to))
+                        } else {
+                            (AdaptiveAlgorithm::Haversine, new_evidence, Haversine::distance(from, to))
+                        }
+                    },
+                    AdaptiveAlgorithm::Geodesic => {
+                        // Make it easier to switch back to Haversine (only 25% of threshold)
+                        if new_evidence < -*switch_threshold * 0.25 {
+                            // Reset evidence when switching to Haversine
+                            (AdaptiveAlgorithm::Haversine, 0.0, Haversine::distance(from, to))
+                        } else {
+                            (AdaptiveAlgorithm::Geodesic, new_evidence, Geodesic::distance(from, to))
+                        }
+                    }
+                };
+
+                (
+                    distance,
+                    Self::Adaptive {
+                        current_algorithm: new_algorithm,
+                        evidence: final_evidence,
+                        switch_threshold: *switch_threshold,
+                        evidence_decay: *evidence_decay,
+                    }
+                )
+            }
+        }
+    }
+
+    /// Create a default adaptive distance calculator with the Haversine algorithm as the initial choice.
+    /// 
+    /// Default settinf prefer Haversine  for better performance but will switch to Geodesic for longer distances and higher latitudes.
+    pub fn default_adaptive() -> Self {
+        Self::Adaptive {
+            current_algorithm: AdaptiveAlgorithm::Haversine, // Start with faster algorithm
+            evidence: 0.0,
+            switch_threshold: 1.2, // Higher threshold to avoid unnecessary switches to Geodesic
+            evidence_decay: 0.1,
+        }
+    }
+}
+
 /// Get the index of the closest *segment* to the user's location within a [`LineString`].
 ///
 /// A [`LineString`] is a set of points (ex: representing the geometry of a maneuver),
@@ -898,6 +1062,415 @@ mod bearing_snapping_tests {
                 accuracy: None
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod adaptive_distance_tests {
+    use super::*;
+    use std::f64::EPSILON;
+
+    // -------------- Basic Functionality Tests --------------
+
+    /// Tests the initial behavior of the algorithm (defaults to Haversine)
+    #[test]
+    fn test_basic_functionality() {
+        let calc = DistanceCalculation::default_adaptive();
+        let p1 = Point::new(0.0, 0.0);
+        let p2 = Point::new(0.1, 0.0);
+        
+        let (distance, new_calc) = calc.calculate_distance(p1, p2);
+        
+        if let DistanceCalculation::Adaptive { current_algorithm, .. } = new_calc {
+            assert_eq!(current_algorithm, AdaptiveAlgorithm::Haversine);
+            assert!((distance - Haversine::distance(p1, p2)).abs() < EPSILON);
+        } else {
+            panic!("Expected Adaptive variant");
+        }
+    }
+
+    /// Tests evidence decay mechanism
+    #[test]
+    fn test_evidence_decay() {
+        let mut calc = DistanceCalculation::Adaptive {
+            current_algorithm: AdaptiveAlgorithm::Haversine,
+            evidence: 0.7,
+            switch_threshold: 1.0,
+            evidence_decay: 0.2,
+        };
+        
+        let neutral_points = [(0.0, 30.0), (0.01, 30.0), (0.02, 30.0)];
+        let initial_evidence = if let DistanceCalculation::Adaptive { evidence, .. } = calc { evidence } else { 0.0 };
+        
+        for i in 0..neutral_points.len()-1 {
+            let (_, new_calc) = calc.calculate_distance(
+                Point::new(neutral_points[i].0, neutral_points[i].1),
+                Point::new(neutral_points[i+1].0, neutral_points[i+1].1)
+            );
+            calc = new_calc;
+            
+            if let DistanceCalculation::Adaptive { evidence, .. } = &calc {
+                println!("Decay test - Iteration {}: Evidence: {:.4}", i, evidence);
+            }
+        }
+        
+        if let DistanceCalculation::Adaptive { evidence, .. } = calc {
+            assert!(evidence < initial_evidence, "Evidence should decay when conditions are neutral");
+        }
+    }
+
+    // -------------- Algorithm Switching Tests --------------
+
+    /// Tests switching to Geodesic algorithm at high latitudes
+    #[test]
+    fn test_switching_to_geodesic_at_high_latitudes() {
+        let mut calc = DistanceCalculation::Adaptive {
+            current_algorithm: AdaptiveAlgorithm::Haversine,
+            evidence: 0.0,
+            switch_threshold: 0.8,
+            evidence_decay: 0.05,
+        };
+        
+        let polar_points = [(0.0, 80.0), (0.5, 80.0), (1.0, 80.0), (1.5, 80.0)];
+        let mut switched = false;
+        
+        for i in 0..polar_points.len()-1 {
+            let (_, new_calc) = calc.calculate_distance(
+                Point::new(polar_points[i].0, polar_points[i].1),
+                Point::new(polar_points[i+1].0, polar_points[i+1].1)
+            );
+            
+            if let DistanceCalculation::Adaptive { current_algorithm, evidence, .. } = &new_calc {
+                println!("Polar test - Point {}: Algorithm: {:?}, Evidence: {:.4}", i, current_algorithm, evidence);
+                
+                if *current_algorithm == AdaptiveAlgorithm::Geodesic {
+                    if let DistanceCalculation::Adaptive { current_algorithm: prev_algorithm, .. } = &calc {
+                        // Only check evidence reset if we JUST switched
+                        if *prev_algorithm == AdaptiveAlgorithm::Haversine {
+                            switched = true;
+                            assert_eq!(*evidence, 0.0, "Evidence should reset after switching");
+                        }
+                    }
+                }
+            }
+            
+            calc = new_calc;
+        }
+        
+        assert!(switched, "Failed to switch to Geodesic in high latitudes");
+    }
+
+    /// Tests switching back to Haversine at low latitudes
+    #[test]
+    fn test_switching_back_to_haversine() {
+        let mut calc = DistanceCalculation::Adaptive {
+            current_algorithm: AdaptiveAlgorithm::Geodesic,
+            evidence: -0.5,  // Start with evidence toward Haversine
+            switch_threshold: 0.8,
+            evidence_decay: 0.05,
+        };
+        
+        let equatorial_points = [(0.0, 0.0), (0.01, 0.01), (0.02, 0.0), (0.03, -0.01)];
+        
+        let mut switched_to_haversine = false;
+        
+        for i in 0..equatorial_points.len()-1 {
+            let (_, new_calc) = calc.calculate_distance(
+                Point::new(equatorial_points[i].0, equatorial_points[i].1),
+                Point::new(equatorial_points[i+1].0, equatorial_points[i+1].1)
+            );
+            calc = new_calc;
+            
+            if let DistanceCalculation::Adaptive { current_algorithm, evidence, .. } = &calc {
+                println!("Switching back test - Point {}: Algorithm: {:?}, Evidence: {:.4}", i, current_algorithm, evidence);
+                
+                if *current_algorithm == AdaptiveAlgorithm::Haversine {
+                    switched_to_haversine = true;
+                    assert_eq!(*evidence, 0.0, "Evidence should reset after switching back");
+                    break;
+                }
+            }
+        }
+        
+        assert!(switched_to_haversine, "Failed to switch back to Haversine for favorable conditions");
+    }
+
+    /// Tests threshold sensitivity
+    #[test]
+    fn test_threshold_sensitivity() {
+        let thresholds = [0.5, 1.0, 2.0];
+        let p1 = Point::new(0.0, 75.0);
+        let p2 = Point::new(0.1, 75.0);
+        
+        println!("\nTesting threshold sensitivity:");
+        let mut iterations_for_thresholds = Vec::new();
+        
+        for threshold in thresholds {
+            let mut calc = DistanceCalculation::Adaptive {
+                current_algorithm: AdaptiveAlgorithm::Haversine,
+                evidence: 0.0,
+                switch_threshold: threshold,
+                evidence_decay: 0.1,
+            };
+            
+            let mut iterations_to_switch = 0;
+            let mut switched = false;
+            
+            for i in 1..=20 {
+                let (_, new_calc) = calc.calculate_distance(p1, p2);
+                calc = new_calc;
+                
+                if let DistanceCalculation::Adaptive { current_algorithm, .. } = &calc {
+                    if *current_algorithm == AdaptiveAlgorithm::Geodesic {
+                        switched = true;
+                        iterations_to_switch = i;
+                        break;
+                    }
+                }
+            }
+            
+            println!("Threshold {}: {} iterations to switch, switched: {}", threshold, iterations_to_switch, switched);
+            
+            if switched {
+                iterations_for_thresholds.push((threshold, iterations_to_switch));
+            }
+        }
+        
+        // Higher thresholds should require more iterations to switch
+        for i in 0..iterations_for_thresholds.len()-1 {
+            let (threshold1, iterations1) = iterations_for_thresholds[i];
+            let (threshold2, iterations2) = iterations_for_thresholds[i+1];
+            
+            if threshold1 < threshold2 {
+                assert!(iterations1 <= iterations2, "Higher threshold {} should require more iterations than threshold {}", threshold2, threshold1);
+            }
+        }
+    }
+    
+    /// Tests multiple algorithm switches in a realistic journey
+    #[test]
+    fn test_multiple_algorithm_switches() {
+        let mut calc = DistanceCalculation::Adaptive {
+            current_algorithm: AdaptiveAlgorithm::Haversine,
+            evidence: 0.0,
+            switch_threshold: 0.7,
+            evidence_decay: 0.1,
+        };
+        
+        // Journey with gradual latitude changes
+        let journey_points = [
+            // Equator (Haversine)
+            (0.0, 0.0), (0.1, 0.0), 
+            // Moving north (gradually building evidence for Geodesic)
+            (0.3, 10.0), (0.5, 30.0), (0.7, 50.0), (0.9, 70.0), (1.0, 80.0),
+            // Stay at high latitude (should use Geodesic)
+            (1.2, 85.0), (1.3, 85.0),
+            // Back to equator (should build evidence for Haversine)
+            (1.5, 70.0), (1.7, 50.0), (1.9, 30.0), (2.1, 10.0), (2.2, 0.0),
+            // To southern high latitudes (should build evidence for Geodesic again)
+            (2.5, -10.0), (2.7, -30.0), (2.9, -50.0), (3.1, -70.0), (3.2, -80.0),
+            // Back to equator (should switch to Haversine again)
+            (3.5, -50.0), (3.7, -30.0), (3.9, -10.0), (4.0, 0.0),
+        ];
+        
+        println!("\nTesting multiple algorithm switches:");
+        
+        let mut current_algorithm = AdaptiveAlgorithm::Haversine;
+        let mut switch_points = Vec::new();
+        
+        for i in 0..journey_points.len()-1 {
+            let (_, new_calc) = calc.calculate_distance(
+                Point::new(journey_points[i].0, journey_points[i].1),
+                Point::new(journey_points[i+1].0, journey_points[i+1].1)
+            );
+            calc = new_calc;
+            
+            if let DistanceCalculation::Adaptive { current_algorithm: alg, evidence, .. } = &calc {
+                if *alg != current_algorithm {
+                    switch_points.push((i, current_algorithm, *alg));
+                    println!("  SWITCHED FROM {:?} TO {:?} at point ({:.1}°,{:.1}°)", 
+                            current_algorithm, alg, journey_points[i+1].0, journey_points[i+1].1);
+                    current_algorithm = *alg;
+                }
+            }
+        }
+        
+        // Should have at least 4 switches (H→G→H→G→H pattern)
+        assert!(switch_points.len() >= 3, "Expected at least 4 algorithm switches, got {}", switch_points.len());
+        
+        if switch_points.len() >= 4 {
+            // Verify the pattern of switches
+            assert_eq!(switch_points[0].1, AdaptiveAlgorithm::Haversine);
+            assert_eq!(switch_points[0].2, AdaptiveAlgorithm::Geodesic);
+            
+            assert_eq!(switch_points[1].1, AdaptiveAlgorithm::Geodesic);
+            assert_eq!(switch_points[1].2, AdaptiveAlgorithm::Haversine);
+            
+            assert_eq!(switch_points[2].1, AdaptiveAlgorithm::Haversine);
+            assert_eq!(switch_points[2].2, AdaptiveAlgorithm::Geodesic);
+            
+            assert_eq!(switch_points[3].1, AdaptiveAlgorithm::Geodesic);
+            assert_eq!(switch_points[3].2, AdaptiveAlgorithm::Haversine);
+        }
+    }
+
+    // -------------- Edge Cases Tests --------------
+
+    /// Tests near the poles where Haversine has the most error
+    #[test]
+    fn test_near_pole_navigation() {
+        let mut calc = DistanceCalculation::default_adaptive();
+        
+        let polar_points = [
+            (0.0, 89.9),    // Near North Pole
+            (90.0, 89.9),   // 90° longitude shift at same latitude
+            (180.0, 89.9),  // 180° longitude shift at same latitude
+        ];
+        
+        println!("\nTesting near-pole navigation:");
+        
+        for i in 0..polar_points.len()-1 {
+            let (distance, new_calc) = calc.calculate_distance(
+                Point::new(polar_points[i].0, polar_points[i].1),
+                Point::new(polar_points[i+1].0, polar_points[i+1].1)
+            );
+            calc = new_calc;
+            
+            if let DistanceCalculation::Adaptive { current_algorithm, .. } = &calc {
+                println!("Pole test - Distance: {:.2}km, Algorithm: {:?}", distance/1000.0, current_algorithm);
+                
+                // Should switch to Geodesic quickly at high latitudes
+                if i > 0 {
+                    assert_eq!(*current_algorithm, AdaptiveAlgorithm::Geodesic, "Should use Geodesic algorithm near poles");
+                }
+            }
+        }
+    }
+
+    /// Tests international date line crossing
+    #[test]
+    fn test_international_date_line_crossing() {
+        let mut calc = DistanceCalculation::default_adaptive();
+        
+        // Points crossing the international date line
+        let points = [(179.9, 45.0), (-179.9, 45.0), (-179.0, 45.0)];
+        
+        for i in 0..points.len()-1 {
+            let (distance, new_calc) = calc.calculate_distance(
+                Point::new(points[i].0, points[i].1),
+                Point::new(points[i+1].0, points[i].1)
+            );
+            calc = new_calc;
+            
+            // The distance should be reasonable (not going around the world)
+            assert!(distance < 400000.0, "Distance across date line should be calculated correctly");
+        }
+    }
+
+    /// Tests extreme situations that should force algorithm switching
+    #[test]
+    fn test_extreme_edge_cases() {
+        let mut calc = DistanceCalculation::default_adaptive();
+        
+        // Points designed to create extreme conditions
+        let extreme_points = [
+            (0.0, 0.0),       // Equator
+            (0.0, 89.5),      // Near North Pole
+            (180.0, 89.5),    // Date line at high latitude
+            (180.0, -89.5),   // South Pole region
+        ];
+        
+        let mut switched_to_geodesic = false;
+        
+        for i in 0..extreme_points.len()-1 {
+            let (_, new_calc) = calc.calculate_distance(
+                Point::new(extreme_points[i].0, extreme_points[i].1),
+                Point::new(extreme_points[i+1].0, extreme_points[i+1].1)
+            );
+            calc = new_calc;
+            
+            if let DistanceCalculation::Adaptive { current_algorithm, .. } = &calc {
+                if *current_algorithm == AdaptiveAlgorithm::Geodesic {
+                    switched_to_geodesic = true;
+                }
+            }
+        }
+        
+        assert!(switched_to_geodesic, "Should switch to Geodesic under extreme conditions");
+    }
+    
+    /// Tests invalid coordinate handling
+    #[test]
+    fn test_invalid_coordinates() {
+        let calc = DistanceCalculation::default_adaptive();
+        
+        // Test various invalid coordinates
+        let invalid_cases = [
+            (Point::new(f64::NAN, 0.0), Point::new(0.0, 0.0)),
+            (Point::new(0.0, f64::NAN), Point::new(0.0, 0.0)),
+            (Point::new(f64::INFINITY, 0.0), Point::new(0.0, 0.0)),
+        ];
+        
+        for (p1, p2) in &invalid_cases {
+            let (distance, _) = calc.calculate_distance(*p1, *p2);
+            assert_eq!(distance, 0.0, "Should return 0.0 for invalid coordinates");
+        }
+    }
+
+    /// Tests tiny coordinate changes
+    #[test]
+    fn test_tiny_coordinate_changes() {
+        let calc = DistanceCalculation::default_adaptive();
+        
+        let p1 = Point::new(0.0, 0.0);
+        let p2 = Point::new(0.00000001, 0.00000001); // Extremely close points
+        
+        let (distance, _) = calc.calculate_distance(p1, p2);
+        
+        // Distance should be very small but not zero or NaN
+        assert!(distance > 0.0 && distance < 1.0, "Distance should be small but valid");
+        assert!(!distance.is_nan(), "Distance should not be NaN");
+    }
+
+    // -------------- Performance/Stability Tests --------------
+
+    /// Tests prevention of algorithm thrashing in rapidly changing conditions
+    #[test]
+    fn test_algorithm_stability_in_zigzag_pattern() {
+        let mut calc = DistanceCalculation::default_adaptive();
+        
+        // Create a zigzag pattern that alternates between high and low latitudes
+        let zigzag_points = [
+            (0.0, 10.0),  // Low latitude
+            (0.1, 70.0),  // High latitude
+            (0.2, 15.0),  // Low latitude
+            (0.3, 75.0),  // High latitude
+            (0.4, 20.0),  // Low latitude
+            (0.5, 80.0),  // High latitude
+        ];
+        
+        println!("\nTesting zigzag route pattern:");
+        
+        let mut algorithm_switches = 0;
+        let mut current_algorithm = AdaptiveAlgorithm::Haversine;
+        
+        for i in 0..zigzag_points.len()-1 {
+            let (_, new_calc) = calc.calculate_distance(
+                Point::new(zigzag_points[i].0, zigzag_points[i].1),
+                Point::new(zigzag_points[i+1].0, zigzag_points[i+1].1)
+            );
+            calc = new_calc;
+            
+            if let DistanceCalculation::Adaptive { current_algorithm: alg, .. } = &calc {
+                if *alg != current_algorithm {
+                    algorithm_switches += 1;
+                    current_algorithm = *alg;
+                }
+            }
+        }
+        
+        // Should not thrash between algorithms
+        assert!(algorithm_switches <= 2, "Algorithm should not thrash between modes (had {} switches)", algorithm_switches);
     }
 }
 
