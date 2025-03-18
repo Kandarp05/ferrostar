@@ -32,6 +32,7 @@ pub mod models;
 pub mod navigation_controller;
 pub mod routing_adapters;
 pub mod simulation;
+pub mod refresh_path;
 
 #[cfg(target_os = "android")]
 fn init_logger() {

@@ -1,7 +1,10 @@
 //! State and configuration data models.
 
+use std::time::SystemTime;
+
 use crate::deviation_detection::{RouteDeviation, RouteDeviationTracking};
 use crate::models::{RouteStep, SpokenInstruction, UserLocation, VisualInstruction, Waypoint};
+use crate::refresh_path::{RouteRefreshState, RouteRefreshStrategy};
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use geo::LineString;
@@ -70,6 +73,11 @@ pub enum TripState {
         progress: TripProgress,
         /// The route deviation status: is the user following the route or not?
         deviation: RouteDeviation,
+        /// The time of the last route refresh check
+        last_refresh_check_time: SystemTime,
+        /// route refresh state is used to check if the current route is still the optimal route
+        /// or if a new route should be calculated
+        route_refresh_state: RouteRefreshState,
         /// The visual instruction that should be displayed in the user interface.
         visual_instruction: Option<VisualInstruction>,
         /// The most recent spoken instruction that should be synthesized using TTS.
@@ -212,4 +220,6 @@ pub struct NavigationControllerConfig {
     pub route_deviation_tracking: RouteDeviationTracking,
     /// Configures how the heading component of the snapped location is reported in [`TripState`].
     pub snapped_location_course_filtering: CourseFiltering,
+    /// Configures how often the route should be refreshed.
+    pub route_refresh_strategy: RouteRefreshStrategy,
 }

@@ -10,14 +10,14 @@ use crate::{
         advance_step, apply_snapped_course, calculate_trip_progress,
         index_of_closest_segment_origin, should_advance_to_next_step, snap_user_location_to_line,
     },
-    models::{Route, UserLocation},
+    models::{Route, UserLocation}, refresh_path::RouteRefreshState,
 };
 use geo::{
     algorithm::{Distance, Haversine},
     geometry::{LineString, Point},
 };
 use models::{NavigationControllerConfig, StepAdvanceStatus, TripState, WaypointAdvanceMode};
-use std::clone::Clone;
+use std::{clone::Clone, time::SystemTime};
 
 #[cfg(feature = "wasm-bindgen")]
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
@@ -66,6 +66,10 @@ impl NavigationController {
             &self.route,
             current_route_step,
         );
+        let last_refresh_check_time = std::time::SystemTime::now();
+        let route_refresh_state = self.config.route_refresh_strategy.check_route_refresh(
+            last_refresh_check_time,
+        );
         let visual_instruction = current_route_step
             .get_active_visual_instruction(progress.distance_to_next_maneuver)
             .cloned();
@@ -84,6 +88,8 @@ impl NavigationController {
             remaining_waypoints: self.route.waypoints.iter().skip(1).copied().collect(),
             progress,
             deviation,
+            last_refresh_check_time,
+            route_refresh_state,
             visual_instruction,
             spoken_instruction,
             annotation_json,
@@ -97,7 +103,8 @@ impl NavigationController {
     /// urban tunnel). We leave this decision to the app developer and provide this as a convenience.
     ///
     /// This method is takes the intermediate state (e.g. from `update_user_location`) and advances if necessary.
-    /// As a result, you do not to re-calculate things like deviation or the snapped user location (search this file for usage of this function).
+    /// As a result, you do not to re-calculate things like deviation or the snapped user location 
+    /// or route refresh state(search this file for usage of this function).
     pub fn advance_to_next_step(&self, state: &TripState) -> TripState {
         match state {
             TripState::Idle => TripState::Idle,
@@ -107,6 +114,8 @@ impl NavigationController {
                 ref remaining_steps,
                 ref remaining_waypoints,
                 deviation,
+                last_refresh_check_time,
+                route_refresh_state,
                 ..
             } => {
                 // FIXME: This logic is mostly duplicated below
@@ -125,7 +134,6 @@ impl NavigationController {
                             &linestring,
                             &remaining_steps,
                         );
-
                         let visual_instruction = current_step
                             .get_active_visual_instruction(progress.distance_to_next_maneuver)
                             .cloned();
@@ -144,6 +152,8 @@ impl NavigationController {
                             // NOTE: We *can't* run deviation calculations in this method,
                             // as it requires a non-snapped user location.
                             deviation: *deviation,
+                            last_refresh_check_time: *last_refresh_check_time,
+                            route_refresh_state: route_refresh_state.clone(),
                             visual_instruction,
                             spoken_instruction,
                             annotation_json,
@@ -171,6 +181,8 @@ impl NavigationController {
                 ref remaining_steps,
                 ref remaining_waypoints,
                 deviation,
+                last_refresh_check_time,
+                route_refresh_state,
                 visual_instruction,
                 spoken_instruction,
                 annotation_json,
@@ -211,6 +223,8 @@ impl NavigationController {
                     remaining_waypoints: remaining_waypoints.clone(),
                     progress,
                     deviation: *deviation,
+                    last_refresh_check_time: *last_refresh_check_time,
+                    route_refresh_state: route_refresh_state.clone(),
                     visual_instruction: visual_instruction.clone(),
                     spoken_instruction: spoken_instruction.clone(),
                     annotation_json: annotation_json.clone(),
@@ -237,6 +251,8 @@ impl NavigationController {
                         // Explicitly recalculated
                         current_step_geometry_index: _,
                         deviation: _,
+                        last_refresh_check_time: _,
+                        route_refresh_state: _,
                         visual_instruction: _,
                         spoken_instruction: _,
                         annotation_json: _,
@@ -251,6 +267,14 @@ impl NavigationController {
                             &self.route,
                             current_step,
                         );
+                        // Check if a route refresh is needed
+                        let route_refresh_state = self.config.route_refresh_strategy
+                            .check_route_refresh(*last_refresh_check_time);
+                        
+                        let updated_refresh_check_time = match route_refresh_state {
+                            RouteRefreshState::RefreshNeeded => SystemTime::now(),
+                            RouteRefreshState::NoRefreshNeeded => *last_refresh_check_time,
+                        };
 
                         // we need to update the geometry index, since the step has changed
                         let (updated_current_step_geometry_index, updated_snapped_user_location) =
@@ -281,6 +305,8 @@ impl NavigationController {
                             remaining_waypoints,
                             progress,
                             deviation,
+                            last_refresh_check_time: updated_refresh_check_time,
+                            route_refresh_state,
                             visual_instruction,
                             spoken_instruction,
                             annotation_json,
@@ -434,6 +460,7 @@ mod tests {
                     max_acceptable_deviation: 0.0,
                 },
                 snapped_location_course_filtering: CourseFiltering::Raw,
+                route_refresh_strategy: crate::refresh_path::RouteRefreshStrategy::None,
             },
         );
 
