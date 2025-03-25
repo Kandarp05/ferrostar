@@ -6,7 +6,7 @@ use ferrostar::navigation_controller::models::{
     CourseFiltering, NavigationControllerConfig, StepAdvanceMode, TripState, WaypointAdvanceMode,
 };
 use ferrostar::navigation_controller::NavigationController;
-use ferrostar::routing_adapters::osrm::OsrmResponseParser;
+use ferrostar::routing_adapters::extended_osrm::ExtendedOsrmResponseParser;
 use ferrostar::routing_adapters::RouteResponseParser;
 
 #[cfg(all(feature = "std", not(feature = "web-time")))]
@@ -22,10 +22,10 @@ const TWO_STEP_RESPONSE: &str = r#"{"routes":[{"weight_name":"auto","weight":56.
 /// The accuracy of each parser is tested separately in the routing_adapters module;
 /// this function simply intends to return a route with two steps.
 fn get_route_with_two_steps() -> Route {
-    let parser = OsrmResponseParser::new(6);
+    let parser = ExtendedOsrmResponseParser::new(6);
     parser
         .parse_response(TWO_STEP_RESPONSE.into())
-        .expect("Unable to parse OSRM response")
+        .expect("Unable to parse Extended OSRM response")
         .pop()
         .expect("Expected a route")
 }

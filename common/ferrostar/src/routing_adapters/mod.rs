@@ -50,11 +50,11 @@ use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 #[cfg(feature = "alloc")]
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use crate::routing_adapters::osrm::OsrmResponseParser;
+use crate::routing_adapters::extended_osrm::ExtendedOsrmResponseParser;
 use crate::routing_adapters::valhalla::ValhallaHttpRequestGenerator;
 
 pub mod error;
-pub mod osrm;
+pub mod extended_osrm;
 pub mod utilities;
 pub mod valhalla;
 
@@ -160,7 +160,7 @@ impl RouteAdapter {
             profile,
             options_json.as_deref(),
         )?);
-        let response_parser = Arc::new(OsrmResponseParser::new(6));
+        let response_parser = Arc::new(ExtendedOsrmResponseParser::new(6));
         Ok(Self::new(request_generator, response_parser))
     }
 

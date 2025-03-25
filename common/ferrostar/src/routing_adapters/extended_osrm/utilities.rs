@@ -1,4 +1,4 @@
-use super::models::{AnyAnnotation, MapboxOsrmIncident};
+use super::models::{AnyAnnotation, MapboxExtendedOsrmIncident};
 use crate::models::{AnyAnnotationValue, BoundingBox, GeographicCoordinate, Incident};
 use crate::routing_adapters::error::ParsingError;
 use serde_json::Value;
@@ -47,8 +47,8 @@ pub(crate) fn zip_annotations(annotation: AnyAnnotation) -> Vec<AnyAnnotationVal
         .collect::<Vec<AnyAnnotationValue>>()
 }
 
-impl From<&MapboxOsrmIncident> for Incident {
-    fn from(incident: &MapboxOsrmIncident) -> Self {
+impl From<&MapboxExtendedOsrmIncident> for Incident {
+    fn from(incident: &MapboxExtendedOsrmIncident) -> Self {
         Incident {
             id: incident.id.clone(),
             incident_type: incident.incident_type,

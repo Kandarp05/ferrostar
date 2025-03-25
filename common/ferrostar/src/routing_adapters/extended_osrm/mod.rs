@@ -1,4 +1,6 @@
-//! Response parsing for OSRM-compatible JSON (including Stadia Maps, Valhalla, Mapbox, etc.).
+//! Response parsing for Extended OSRM-compatible JSON (including Stadia Maps, Valhalla, Mapbox, etc.).
+//!
+//! "Extended OSRM" refers to the OSRM-compatible JSON format that includes additional information
 
 pub(crate) mod models;
 pub mod utilities;
@@ -10,8 +12,9 @@ use crate::models::{
 };
 use crate::routing_adapters::utilities::get_coordinates_from_geometry;
 use crate::routing_adapters::{
-    osrm::models::{
-        Route as OsrmRoute, RouteResponse, RouteStep as OsrmRouteStep, Waypoint as OsrmWaypoint,
+    extended_osrm::models::{
+        Route as ExtendedOsrmRoute, RouteResponse, RouteStep as ExtendedOsrmRouteStep,
+        Waypoint as ExtendedOsrmWaypoint,
     },
     ParsingError, Route,
 };
@@ -23,29 +26,31 @@ use polyline::decode_polyline;
 use utilities::get_annotation_slice;
 use uuid::Uuid;
 
-/// A response parser for OSRM-compatible routing backends.
+/// A response parser for Extended OSRM-compatible routing backends.
 ///
 /// The parser is NOT limited to only the standard OSRM format; many Valhalla/Mapbox tags are also
 /// parsed and are included in the final route.
 #[derive(Debug)]
-pub struct OsrmResponseParser {
+pub struct ExtendedOsrmResponseParser {
     polyline_precision: u32,
 }
 
-impl OsrmResponseParser {
+impl ExtendedOsrmResponseParser {
     pub fn new(polyline_precision: u32) -> Self {
         Self { polyline_precision }
     }
 }
 
-impl RouteResponseParser for OsrmResponseParser {
+impl RouteResponseParser for ExtendedOsrmResponseParser {
     fn parse_response(&self, response: Vec<u8>) -> Result<Vec<Route>, ParsingError> {
         let res: RouteResponse = serde_json::from_slice(&response)?;
 
         if res.code == "Ok" {
             res.routes
                 .iter()
-                .map(|route| Route::from_osrm(route, &res.waypoints, self.polyline_precision))
+                .map(|route| {
+                    Route::from_extended_osrm(route, &res.waypoints, self.polyline_precision)
+                })
                 .collect::<Result<Vec<_>, _>>()
         } else {
             Err(ParsingError::InvalidStatusCode {
@@ -57,15 +62,15 @@ impl RouteResponseParser for OsrmResponseParser {
 }
 
 impl Route {
-    /// Create a route from an OSRM route and OSRM waypoints.
+    /// Create a route from an ExtendedOSRM route and ExtendedOSRM waypoints.
     ///
     /// # Arguments
-    /// * `route` - The OSRM route.
-    /// * `waypoints` - The OSRM waypoints.
+    /// * `route` - The ExtendedOSRM route.
+    /// * `waypoints` - The ExtendedOSRM waypoints.
     /// * `polyline_precision` - The precision of the polyline.
-    pub fn from_osrm(
-        route: &OsrmRoute,
-        waypoints: &[OsrmWaypoint],
+    pub fn from_extended_osrm(
+        route: &ExtendedOsrmRoute,
+        waypoints: &[ExtendedOsrmWaypoint],
         polyline_precision: u32,
     ) -> Result<Self, ParsingError> {
         let via_waypoint_indices: Vec<_> = route
@@ -90,17 +95,17 @@ impl Route {
             })
             .collect();
 
-        Self::from_osrm_with_standard_waypoints(route, &waypoints, polyline_precision)
+        Self::from_extended_osrm_with_standard_waypoints(route, &waypoints, polyline_precision)
     }
 
-    /// Create a route from an OSRM route and Ferrostar waypoints.
+    /// Create a route from an ExtendedOSRM route and Ferrostar waypoints.
     ///
     /// # Arguments
-    /// * `route` - The OSRM route.
+    /// * `route` - The ExtendedOSRM route.
     /// * `waypoints` - The Ferrostar waypoints.
     /// * `polyline_precision` - The precision of the polyline.
-    pub fn from_osrm_with_standard_waypoints(
-        route: &OsrmRoute,
+    pub fn from_extended_osrm_with_standard_waypoints(
+        route: &ExtendedOsrmRoute,
         waypoints: &[Waypoint],
         polyline_precision: u32,
     ) -> Result<Self, ParsingError> {
@@ -189,7 +194,7 @@ impl Route {
 
                         start_index = end_index;
 
-                        RouteStep::from_osrm_and_geom(
+                        RouteStep::from_extended_osrm_and_geom(
                             step,
                             step_geometry,
                             annotation_slice,
@@ -224,8 +229,8 @@ impl RouteStep {
             .collect()
     }
 
-    fn from_osrm_and_geom(
-        value: &OsrmRouteStep,
+    fn from_extended_osrm_and_geom(
+        value: &ExtendedOsrmRouteStep,
         geometry: Vec<GeographicCoordinate>,
         annotations: Option<Vec<AnyAnnotationValue>>,
         incidents: Vec<Incident>,
@@ -328,28 +333,28 @@ impl RouteStep {
 mod tests {
     use super::*;
 
-    const STANDARD_OSRM_POLYLINE6_RESPONSE: &str =
+    const STANDARD_EXTENDED_OSRM_POLYLINE6_RESPONSE: &str =
         include_str!("fixtures/standard_osrm_polyline6_response.json");
     const VALHALLA_OSRM_RESPONSE: &str = include_str!("fixtures/valhalla_osrm_response.json");
-    const VALHALLA_OSRM_RESPONSE_VIA_WAYS: &str =
+    const VALHALLA_EXTENDED_OSRM_RESPONSE_VIA_WAYS: &str =
         include_str!("fixtures/valhalla_osrm_response_via_ways.json");
     const VALHALLA_EXTENDED_OSRM_RESPONSE: &str =
         include_str!("fixtures/valhalla_extended_osrm_response.json");
-    const VALHALLA_OSRM_RESPONSE_WITH_EXITS: &str =
+    const VALHALLA_EXTENDED_OSRM_RESPONSE_WITH_EXITS: &str =
         include_str!("fixtures/valhalla_osrm_response_with_exit_info.json");
 
     #[test]
-    fn parse_standard_osrm() {
-        let parser = OsrmResponseParser::new(6);
+    fn parse_standard_extended_osrm() {
+        let parser = ExtendedOsrmResponseParser::new(6);
         let routes = parser
-            .parse_response(STANDARD_OSRM_POLYLINE6_RESPONSE.into())
-            .expect("Unable to parse OSRM response");
+            .parse_response(STANDARD_EXTENDED_OSRM_POLYLINE6_RESPONSE.into())
+            .expect("Unable to parse ExtendedOSRM response");
         insta::assert_yaml_snapshot!(routes);
     }
 
     #[test]
-    fn parse_valhalla_osrm() {
-        let parser = OsrmResponseParser::new(6);
+    fn parse_valhalla_extended_osrm() {
+        let parser = ExtendedOsrmResponseParser::new(6);
         let routes = parser
             .parse_response(VALHALLA_OSRM_RESPONSE.into())
             .expect("Unable to parse Valhalla OSRM response");
@@ -360,11 +365,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_valhalla_osrm_with_via_ways() {
-        let parser = OsrmResponseParser::new(6);
+    fn parse_valhalla_extended_osrm_with_via_ways() {
+        let parser = ExtendedOsrmResponseParser::new(6);
         let routes = parser
-            .parse_response(VALHALLA_OSRM_RESPONSE_VIA_WAYS.into())
-            .expect("Unable to parse Valhalla OSRM response");
+            .parse_response(VALHALLA_EXTENDED_OSRM_RESPONSE_VIA_WAYS.into())
+            .expect("Unable to parse Valhalla ExtendedOSRM response");
 
         insta::assert_yaml_snapshot!(routes, {
             ".**.annotations" => "redacted annotations json strings vec"
@@ -373,10 +378,10 @@ mod tests {
 
     #[test]
     fn parse_valhalla_asserting_annotation_lengths() {
-        let parser = OsrmResponseParser::new(6);
+        let parser = ExtendedOsrmResponseParser::new(6);
         let routes = parser
             .parse_response(VALHALLA_OSRM_RESPONSE.into())
-            .expect("Unable to parse Valhalla OSRM response");
+            .expect("Unable to parse Valhalla ExtendedOSRM response");
 
         // Loop through every step and validate that the length of the annotations
         // matches the length of the geometry minus one. This is because each annotation
@@ -405,7 +410,7 @@ mod tests {
 
     #[test]
     fn parse_valhalla_asserting_sub_maneuvers() {
-        let parser = OsrmResponseParser::new(6);
+        let parser = ExtendedOsrmResponseParser::new(6);
         let routes = parser
             .parse_response(VALHALLA_EXTENDED_OSRM_RESPONSE.into())
             .expect("Unable to parse Valhalla Extended OSRM response");
@@ -441,11 +446,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_osrm_with_exits() {
-        let parser = OsrmResponseParser::new(6);
+    fn parse_extended_osrm_with_exits() {
+        let parser = ExtendedOsrmResponseParser::new(6);
         let routes = parser
-            .parse_response(VALHALLA_OSRM_RESPONSE_WITH_EXITS.into())
-            .expect("Unable to parse OSRM response");
+            .parse_response(VALHALLA_EXTENDED_OSRM_RESPONSE_WITH_EXITS.into())
+            .expect("Unable to parse ExtendedOSRM response");
 
         insta::assert_yaml_snapshot!(routes, {
             ".**.annotations" => "redacted annotations json strings vec"
@@ -453,14 +458,14 @@ mod tests {
     }
 
     #[test]
-    fn test_osrm_parser_with_empty_route_array() {
+    fn test_extended_osrm_parser_with_empty_route_array() {
         let error_json = r#"{
             "code": "NoRoute",
             "message": "No route found between the given coordinates",
             "routes": []
         }"#;
 
-        let parser = OsrmResponseParser::new(6);
+        let parser = ExtendedOsrmResponseParser::new(6);
         let result = parser.parse_response(error_json.as_bytes().to_vec());
 
         assert!(result.is_err());
@@ -476,13 +481,13 @@ mod tests {
     }
 
     #[test]
-    fn test_osrm_parser_with_missing_route_field() {
+    fn test_extended_osrm_parser_with_missing_route_field() {
         let error_json = r#"{
             "code": "NoRoute",
             "message": "No route found between the given coordinates"
         }"#;
 
-        let parser = OsrmResponseParser::new(6);
+        let parser = ExtendedOsrmResponseParser::new(6);
         let result = parser.parse_response(error_json.as_bytes().to_vec());
 
         assert!(result.is_err());

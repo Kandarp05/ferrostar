@@ -59,9 +59,9 @@ mod uniffi_deps {
     pub use crate::models::{Route, Waypoint};
     pub use crate::routing_adapters::{
         error::{InstantiationError, ParsingError},
-        osrm::{
-            models::{Route as OsrmRoute, Waypoint as OsrmWaypoint},
-            OsrmResponseParser,
+        extended_osrm::{
+            models::{Route as ExtendedOsrmRoute, Waypoint as ExtendedOsrmWaypoint},
+            ExtendedOsrmResponseParser,
         },
         valhalla::ValhallaHttpRequestGenerator,
         RouteRequestGenerator, RouteResponseParser,
@@ -123,7 +123,7 @@ impl UniffiCustomTypeConverter for DateTime<Utc> {
 //
 
 /// Creates a [`RouteRequestGenerator`]
-/// which generates requests to an arbitrary Valhalla server (using the OSRM response format).
+/// which generates requests to an arbitrary Valhalla server (using the ExtendedOSRM response format).
 ///
 /// This is provided as a convenience for use from foreign code when creating your own [`routing_adapters::RouteAdapter`].
 #[cfg(feature = "uniffi")]
@@ -140,48 +140,46 @@ fn create_valhalla_request_generator(
     )?))
 }
 
-/// Creates a [`RouteResponseParser`] capable of parsing OSRM responses.
+/// Creates a [`RouteResponseParser`] capable of parsing ExtendedOSRM responses.
 ///
 /// This response parser is designed to be fairly flexible,
-/// supporting both vanilla OSRM and enhanced Valhalla (ex: from Stadia Maps and Mapbox) outputs
-/// which contain richer information like banners and voice instructions for navigation.
+/// supporting both vanilla OSRM and ExtendedOSRM
 #[cfg(feature = "uniffi")]
 #[uniffi::export]
-fn create_osrm_response_parser(polyline_precision: u32) -> Arc<dyn RouteResponseParser> {
-    Arc::new(OsrmResponseParser::new(polyline_precision))
+fn create_extended_osrm_response_parser(polyline_precision: u32) -> Arc<dyn RouteResponseParser> {
+    Arc::new(ExtendedOsrmResponseParser::new(polyline_precision))
 }
 
-// MARK: OSRM Route Conversion
+// MARK: ExtendedOSRM Route Conversion
 
-/// Creates a [`Route`] from OSRM data.
+/// Creates a [`Route`] from ExtendedOSRM data.
 ///
-/// This uses the same logic as the [`OsrmResponseParser`] and is designed to be fairly flexible,
-/// supporting both vanilla OSRM and enhanced Valhalla (ex: from Stadia Maps and Mapbox) outputs
+/// This uses the same logic as the [`ExtendedOsrmResponseParser`] and is designed to be fairly flexible,
+/// supporting both vanilla ExtendedOSRM and enhanced Valhalla (ex: from Stadia Maps and Mapbox) outputs
 /// which contain richer information like banners and voice instructions for navigation.
 #[cfg(feature = "uniffi")]
 #[uniffi::export]
-fn create_route_from_osrm(
+fn create_route_from_extended_osrm(
     route_data: &[u8],
     waypoint_data: &[u8],
     polyline_precision: u32,
 ) -> Result<Route, ParsingError> {
-    let route: OsrmRoute = serde_json::from_slice(route_data)?;
-    let waypoints: Vec<OsrmWaypoint> = serde_json::from_slice(waypoint_data)?;
-    Route::from_osrm(&route, &waypoints, polyline_precision)
+    let route: ExtendedOsrmRoute = serde_json::from_slice(route_data)?;
+    let waypoints: Vec<ExtendedOsrmWaypoint> = serde_json::from_slice(waypoint_data)?;
+    Route::from_extended_osrm(&route, &waypoints, polyline_precision)
 }
 
-/// Creates a [`Route`] from OSRM route data and ferrostar waypoints.
+/// Creates a [`Route`] from ExtendedOSRM route data and ferrostar waypoints.
 ///
-/// This uses the same logic as the [`OsrmResponseParser`] and is designed to be fairly flexible,
-/// supporting both vanilla OSRM and enhanced Valhalla (ex: from Stadia Maps and Mapbox) outputs
-/// which contain richer information like banners and voice instructions for navigation.
+/// This uses the same logic as the [`ExtendedOsrmResponseParser`] and is designed to be fairly flexible,
+/// supporting both vanilla OSRM and ExtendedOSRM
 #[cfg(feature = "uniffi")]
 #[uniffi::export]
-fn create_route_from_osrm_route(
+fn create_route_from_extended_osrm_route(
     route_data: &[u8],
     waypoints: &[Waypoint],
     polyline_precision: u32,
 ) -> Result<Route, ParsingError> {
-    let route: OsrmRoute = serde_json::from_slice(route_data)?;
-    Route::from_osrm_with_standard_waypoints(&route, waypoints, polyline_precision)
+    let route: ExtendedOsrmRoute = serde_json::from_slice(route_data)?;
+    Route::from_extended_osrm_with_standard_waypoints(&route, waypoints, polyline_precision)
 }

@@ -78,7 +78,7 @@ pub struct RouteLeg {
     pub via_waypoints: Vec<ViaWaypoint>,
     /// Incidents along the route.
     #[serde(default)]
-    pub incidents: Vec<MapboxOsrmIncident>,
+    pub incidents: Vec<MapboxExtendedOsrmIncident>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq)]
@@ -90,7 +90,7 @@ pub struct AnyAnnotation {
 /// A traffic incident, as modeled in the Mapbox OSRM extensions.
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug)]
-pub struct MapboxOsrmIncident {
+pub struct MapboxExtendedOsrmIncident {
     pub id: String,
     #[serde(rename = "type")]
     pub incident_type: IncidentType,
@@ -591,7 +591,7 @@ mod tests {
         }
         "#;
 
-        let incident: MapboxOsrmIncident =
+        let incident: MapboxExtendedOsrmIncident =
             serde_json::from_str(data).expect("Failed to parse Incident");
 
         insta::assert_yaml_snapshot!(incident);

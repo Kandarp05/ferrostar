@@ -1,5 +1,5 @@
 use crate::models::{BoundingBox, GeographicCoordinate, Route, RouteStep, Waypoint, WaypointKind};
-use crate::routing_adapters::{osrm::OsrmResponseParser, RouteResponseParser};
+use crate::routing_adapters::{extended_osrm::ExtendedOsrmResponseParser, RouteResponseParser};
 #[cfg(feature = "alloc")]
 use alloc::string::ToString;
 use geo::{line_string, BoundingRect, Haversine, Length, LineString, Point};
@@ -17,7 +17,7 @@ const VALHALLA_SELF_INTERSECTING_OSRM_RESPONSE: &str =
 /// The accuracy of each parser is tested separately in the routing_adapters module;
 /// this function simply returns a route for an extended test of the state machine.
 pub fn get_extended_route() -> Route {
-    let parser = OsrmResponseParser::new(6);
+    let parser = ExtendedOsrmResponseParser::new(6);
     parser
         .parse_response(VALHALLA_EXTENDED_OSRM_RESPONSE.into())
         .expect("Unable to parse OSRM response")
@@ -30,7 +30,7 @@ pub fn get_extended_route() -> Route {
 /// The accuracy of each parser is tested separately in the routing_adapters module;
 /// this function simply returns a route for an extended test of the state machine.
 pub fn get_self_intersecting_route() -> Route {
-    let parser = OsrmResponseParser::new(6);
+    let parser = ExtendedOsrmResponseParser::new(6);
     parser
         .parse_response(VALHALLA_SELF_INTERSECTING_OSRM_RESPONSE.into())
         .expect("Unable to parse OSRM response")
