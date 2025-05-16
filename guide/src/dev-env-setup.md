@@ -65,6 +65,8 @@ npm run build
 Run `npm run format:fix` from the `web` directory before committing
 to ensure consistent formatting.
 
+Run `npm run lint` from the `web` directory before commiting to ensure there are no linting errors.
+
 ### iOS
 
 1. Install the latest version of Xcode.
